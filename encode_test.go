@@ -3,6 +3,7 @@ package hnsw
 import (
 	"bytes"
 	"cmp"
+	"math/rand"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -176,6 +177,88 @@ func TestSavedGraph(t *testing.T) {
 	require.NoError(t, err)
 
 	requireGraphApproxEquals(t, g1.Graph, g2.Graph)
+}
+
+func TestGraph_ExportUnregisteredDistance(t *testing.T) {
+	g := newTestGraph[int]()
+	g.Distance = func(a, b []float32) float32 { return 0 }
+	g.Add(Node[int]{Key: 1, Value: Vector{1.0}})
+
+	buf := &bytes.Buffer{}
+	err := g.Export(buf)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "must be registered")
+}
+
+func TestGraph_ImportUnknownDistance(t *testing.T) {
+	// Build a valid export first, then tamper with the distance name
+	g := newTestGraph[int]()
+	g.Add(Node[int]{Key: 1, Value: Vector{1.0}})
+
+	buf := &bytes.Buffer{}
+	err := g.Export(buf)
+	require.NoError(t, err)
+
+	// Replace "euclidean" with "bogus_fn\x00\x00" in the binary
+	data := buf.Bytes()
+	dataStr := string(data)
+	// Just import from a fresh buffer with bad distance
+	badBuf := &bytes.Buffer{}
+	// Write version, M, Ml, EfSearch, then a bad distance name
+	_, err = multiBinaryWrite(badBuf, encodingVersion, 6, 0.5, 20, "nonexistent")
+	require.NoError(t, err)
+	_ = dataStr // suppress unused
+
+	g2 := &Graph[int]{}
+	err = g2.Import(badBuf)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unknown distance function")
+}
+
+func TestGraph_ImportBadVersion(t *testing.T) {
+	buf := &bytes.Buffer{}
+	_, err := multiBinaryWrite(buf, 999, 6, 0.5, 20, "euclidean")
+	require.NoError(t, err)
+
+	g := &Graph[int]{}
+	err = g.Import(buf)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "incompatible encoding version")
+}
+
+func TestGraph_ImportTruncated(t *testing.T) {
+	g := &Graph[int]{}
+	buf := &bytes.Buffer{}
+	err := g.Import(buf)
+	require.Error(t, err)
+}
+
+func TestGraph_ExportImportStringKeys(t *testing.T) {
+	g1 := &Graph[string]{
+		M:        6,
+		Distance: CosineDistance,
+		Ml:       0.5,
+		EfSearch: 20,
+		Rng:      rand.New(rand.NewSource(0)),
+	}
+	g1.Add(
+		Node[string]{Key: "hello", Value: Vector{1, 0}},
+		Node[string]{Key: "world", Value: Vector{0, 1}},
+	)
+
+	buf := &bytes.Buffer{}
+	err := g1.Export(buf)
+	require.NoError(t, err)
+
+	g2 := &Graph[string]{}
+	err = g2.Import(buf)
+	require.NoError(t, err)
+
+	requireGraphApproxEquals(t, g1, g2)
+
+	vec, ok := g2.Lookup("hello")
+	require.True(t, ok)
+	require.Equal(t, Vector{1, 0}, vec)
 }
 
 const benchGraphSize = 100

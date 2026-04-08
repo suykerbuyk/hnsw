@@ -64,7 +64,7 @@ func (n *layerNode[K]) addNeighbor(newNode *layerNode[K], m int, dist DistanceFu
 	delete(n.neighbors, worst.Key)
 	// Delete backlink from the worst neighbor.
 	delete(worst.neighbors, n.Key)
-	worst.replenish(m)
+	worst.replenish(m, dist)
 }
 
 type searchCandidate[K cmp.Ordered] struct {
@@ -106,24 +106,26 @@ func (n *layerNode[K]) search(
 	visited[n.Key] = true
 
 	for candidates.Len() > 0 {
-		var (
-			current  = candidates.Pop().node
-			improved = false
-		)
+		current := candidates.Pop()
+
+		// Standard HNSW termination: if the closest remaining candidate
+		// is farther than the worst result, no further improvement is possible.
+		if result.Len() >= k && current.dist > result.Max().dist {
+			break
+		}
 
 		// We iterate the map in a sorted, deterministic fashion for
 		// tests.
-		neighborKeys := maps.Keys(current.neighbors)
+		neighborKeys := maps.Keys(current.node.neighbors)
 		slices.Sort(neighborKeys)
 		for _, neighborID := range neighborKeys {
-			neighbor := current.neighbors[neighborID]
+			neighbor := current.node.neighbors[neighborID]
 			if visited[neighborID] {
 				continue
 			}
 			visited[neighborID] = true
 
 			dist := distance(neighbor.Value, target)
-			improved = improved || dist < result.Min().dist
 			if result.Len() < k {
 				result.Push(searchCandidate[K]{node: neighbor, dist: dist})
 			} else if dist < result.Max().dist {
@@ -132,23 +134,16 @@ func (n *layerNode[K]) search(
 			}
 
 			candidates.Push(searchCandidate[K]{node: neighbor, dist: dist})
-			// Always store candidates if we haven't reached the limit.
 			if candidates.Len() > efSearch {
 				candidates.PopLast()
 			}
-		}
-
-		// Termination condition: no improvement in distance and at least
-		// kMin candidates in the result set.
-		if !improved && result.Len() >= k {
-			break
 		}
 	}
 
 	return result.Slice()
 }
 
-func (n *layerNode[K]) replenish(m int) {
+func (n *layerNode[K]) replenish(m int, dist DistanceFunc) {
 	if len(n.neighbors) >= m {
 		return
 	}
@@ -165,7 +160,7 @@ func (n *layerNode[K]) replenish(m int) {
 			if candidate == n {
 				continue
 			}
-			n.addNeighbor(candidate, m, CosineDistance)
+			n.addNeighbor(candidate, m, dist)
 			if len(n.neighbors) >= m {
 				return
 			}
@@ -175,13 +170,13 @@ func (n *layerNode[K]) replenish(m int) {
 
 // isolates remove the node from the graph by removing all connections
 // to neighbors.
-func (n *layerNode[K]) isolate(m int) {
+func (n *layerNode[K]) isolate(m int, dist DistanceFunc) {
 	for _, neighbor := range n.neighbors {
 		delete(neighbor.neighbors, n.Key)
 	}
 
 	for _, neighbor := range n.neighbors {
-		neighbor.replenish(m)
+		neighbor.replenish(m, dist)
 	}
 }
 
@@ -370,9 +365,12 @@ func (g *Graph[K]) Add(nodes ...Node[K]) {
 			searchPoint := layer.entry()
 
 			// On subsequent layers, we use the elevator node to enter the graph
-			// at the best point.
+			// at the best point. The elevator may have been deleted between
+			// layers, so guard with an existence check.
 			if elevator != nil {
-				searchPoint = layer.nodes[*elevator]
+				if node, ok := layer.nodes[*elevator]; ok {
+					searchPoint = node
+				}
 			}
 
 			if g.Distance == nil {
@@ -447,8 +445,12 @@ func (h *Graph[K]) search(near Vector, k int) []SearchResult[K] {
 
 	for layer := len(h.layers) - 1; layer >= 0; layer-- {
 		searchPoint := h.layers[layer].entry()
+		// The elevator may reference a node deleted between layers,
+		// so guard with an existence check.
 		if elevator != nil {
-			searchPoint = h.layers[layer].nodes[*elevator]
+			if node, ok := h.layers[layer].nodes[*elevator]; ok {
+				searchPoint = node
+			}
 		}
 
 		// Descending hierarchies
@@ -501,7 +503,7 @@ func (h *Graph[K]) Delete(key K) bool {
 		if len(layer.nodes) == 0 {
 			deleteLayer[i] = struct{}{}
 		}
-		node.isolate(h.M)
+		node.isolate(h.M, h.Distance)
 		deleted = true
 	}
 
