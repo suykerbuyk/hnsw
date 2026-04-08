@@ -30,6 +30,34 @@ func TestCosineSimilarity(t *testing.T) {
 	require.InDelta(t, 0, CosineDistance(a, b), 0.000001)
 }
 
+func TestRegisterDistanceFunc(t *testing.T) {
+	custom := func(a, b []float32) float32 { return 42 }
+	RegisterDistanceFunc("custom_test", custom)
+
+	name, ok := distanceFuncToName(custom)
+	require.True(t, ok)
+	require.Equal(t, "custom_test", name)
+
+	// Clean up
+	delete(distanceFuncs, "custom_test")
+}
+
+func TestDistanceFuncToName(t *testing.T) {
+	name, ok := distanceFuncToName(CosineDistance)
+	require.True(t, ok)
+	require.Equal(t, "cosine", name)
+
+	name, ok = distanceFuncToName(EuclideanDistance)
+	require.True(t, ok)
+	require.Equal(t, "euclidean", name)
+}
+
+func TestDistanceFuncToName_Unknown(t *testing.T) {
+	unknown := func(a, b []float32) float32 { return 0 }
+	_, ok := distanceFuncToName(unknown)
+	require.False(t, ok)
+}
+
 func BenchmarkCosineSimilarity(b *testing.B) {
 	v1 := randFloats(1536)
 	v2 := randFloats(1536)
