@@ -118,8 +118,8 @@ func TestGraph_AddSearch(t *testing.T) {
 		[]Node[int]{
 			{64, Vector{64}},
 			{65, Vector{65}},
-			{62, Vector{62}},
 			{63, Vector{63}},
+			{66, Vector{66}},
 		},
 		nearest,
 	)
@@ -258,4 +258,210 @@ func TestGraph_RemoveAllNodes(t *testing.T) {
 		g.Delete(1)
 		g.Add(MakeNode(1, vec))
 	}
+}
+
+func TestGraph_SearchWithDistance(t *testing.T) {
+	g := newTestGraph[int]()
+	for i := 0; i < 10; i++ {
+		g.Add(Node[int]{Key: i, Value: Vector{float32(i)}})
+	}
+
+	results := g.SearchWithDistance([]float32{5.5}, 3)
+	require.Len(t, results, 3)
+
+	// Distances should be non-negative
+	for _, r := range results {
+		require.GreaterOrEqual(t, r.Distance, float32(0))
+	}
+
+	// All nearest neighbors should be close to 5.5
+	for _, r := range results {
+		require.LessOrEqual(t, r.Distance, float32(3),
+			"node %d should be close to query", r.Node.Key)
+	}
+}
+
+func TestGraph_Lookup(t *testing.T) {
+	g := newTestGraph[int]()
+	g.Add(Node[int]{Key: 42, Value: Vector{1.0, 2.0, 3.0}})
+
+	vec, ok := g.Lookup(42)
+	require.True(t, ok)
+	require.Equal(t, Vector{1.0, 2.0, 3.0}, vec)
+}
+
+func TestGraph_Lookup_NotFound(t *testing.T) {
+	g := newTestGraph[int]()
+	g.Add(Node[int]{Key: 1, Value: Vector{1.0}})
+
+	vec, ok := g.Lookup(999)
+	require.False(t, ok)
+	require.Nil(t, vec)
+}
+
+func TestGraph_Lookup_EmptyGraph(t *testing.T) {
+	g := newTestGraph[int]()
+
+	vec, ok := g.Lookup(1)
+	require.False(t, ok)
+	require.Nil(t, vec)
+}
+
+func TestGraph_Search_EmptyGraph(t *testing.T) {
+	g := newTestGraph[int]()
+
+	results := g.Search([]float32{1.0}, 5)
+	require.Empty(t, results)
+}
+
+func TestGraph_Delete_EmptyGraph(t *testing.T) {
+	g := newTestGraph[int]()
+
+	ok := g.Delete(1)
+	require.False(t, ok)
+}
+
+func TestGraph_Dims(t *testing.T) {
+	g := newTestGraph[int]()
+
+	// Empty graph has 0 dims
+	require.Equal(t, 0, g.Dims())
+
+	g.Add(Node[int]{Key: 1, Value: Vector{1.0, 2.0, 3.0}})
+	require.Equal(t, 3, g.Dims())
+}
+
+func TestGraph_Len(t *testing.T) {
+	g := newTestGraph[int]()
+	require.Equal(t, 0, g.Len())
+
+	g.Add(Node[int]{Key: 1, Value: Vector{1.0}})
+	require.Equal(t, 1, g.Len())
+
+	g.Add(Node[int]{Key: 2, Value: Vector{2.0}})
+	require.Equal(t, 2, g.Len())
+
+	g.Delete(1)
+	require.Equal(t, 1, g.Len())
+}
+
+func TestGraph_AddReplace(t *testing.T) {
+	g := newTestGraph[int]()
+	// Add several nodes first so the graph has structure
+	for i := 0; i < 10; i++ {
+		g.Add(Node[int]{Key: i, Value: Vector{float32(i)}})
+	}
+	require.Equal(t, 10, g.Len())
+
+	// Replace node 5 with a new value
+	g.Add(Node[int]{Key: 5, Value: Vector{99.0}})
+	require.Equal(t, 10, g.Len())
+
+	vec, ok := g.Lookup(5)
+	require.True(t, ok)
+	require.Equal(t, Vector{99.0}, vec)
+}
+
+func TestGraph_DeleteWithEuclidean(t *testing.T) {
+	// Regression test for the replenish() bug where CosineDistance was
+	// hardcoded instead of using the graph's configured distance function.
+	g := &Graph[int]{
+		M:        4,
+		Distance: EuclideanDistance,
+		Ml:       0.5,
+		EfSearch: 20,
+		Rng:      rand.New(rand.NewSource(42)),
+	}
+
+	// Add enough nodes to trigger replenish on delete
+	for i := 0; i < 32; i++ {
+		g.Add(Node[int]{Key: i, Value: Vector{float32(i * 10)}})
+	}
+
+	// Delete a middle node — should trigger isolate → replenish with EuclideanDistance
+	ok := g.Delete(16)
+	require.True(t, ok)
+
+	// Graph should still be searchable with correct results
+	nearest := g.Search([]float32{160}, 3)
+	require.NotEmpty(t, nearest)
+
+	// Verify the nearest results make sense for Euclidean distance
+	for _, n := range nearest {
+		dist := EuclideanDistance(n.Value, Vector{160})
+		require.LessOrEqual(t, dist, float32(30),
+			"node %d (value %v) is too far from query", n.Key, n.Value)
+	}
+}
+
+func TestGraph_DeleteWithCosine(t *testing.T) {
+	g := NewGraph[int]()
+	g.Rng = rand.New(rand.NewSource(42))
+
+	// Add normalized-ish vectors
+	g.Add(
+		Node[int]{Key: 1, Value: Vector{1, 0}},
+		Node[int]{Key: 2, Value: Vector{0.9, 0.1}},
+		Node[int]{Key: 3, Value: Vector{0, 1}},
+		Node[int]{Key: 4, Value: Vector{0.5, 0.5}},
+		Node[int]{Key: 5, Value: Vector{0.7, 0.3}},
+	)
+
+	ok := g.Delete(2)
+	require.True(t, ok)
+
+	// Search should still work correctly
+	nearest := g.Search([]float32{1, 0}, 2)
+	require.Len(t, nearest, 2)
+	require.Equal(t, 1, nearest[0].Key)
+}
+
+func TestGraph_StaleElevator(t *testing.T) {
+	// Regression test for upstream issue #15: panic when elevator node
+	// is deleted between layers.
+	g := &Graph[int]{
+		M:        4,
+		Distance: EuclideanDistance,
+		Ml:       0.5,
+		EfSearch: 20,
+		Rng:      rand.New(rand.NewSource(0)),
+	}
+
+	// Build a multi-layer graph
+	for i := 0; i < 64; i++ {
+		g.Add(Node[int]{Key: i, Value: Vector{float32(i)}})
+	}
+
+	al := Analyzer[int]{Graph: g}
+	require.Greater(t, al.Height(), 1, "need multiple layers for this test")
+
+	// Delete nodes that appear in upper layers, then add and search
+	// This should not panic.
+	for i := 60; i < 64; i++ {
+		g.Delete(i)
+	}
+
+	// Add new nodes after deletion — should not panic
+	for i := 100; i < 110; i++ {
+		g.Add(Node[int]{Key: i, Value: Vector{float32(i)}})
+	}
+
+	// Search should not panic
+	results := g.Search([]float32{50}, 5)
+	require.NotEmpty(t, results)
+}
+
+func TestGraph_assertDims_Panic(t *testing.T) {
+	g := newTestGraph[int]()
+	g.Add(Node[int]{Key: 1, Value: Vector{1.0, 2.0}})
+
+	require.Panics(t, func() {
+		g.Add(Node[int]{Key: 2, Value: Vector{1.0, 2.0, 3.0}})
+	})
+}
+
+func TestGraph_MakeNode(t *testing.T) {
+	n := MakeNode(42, Vector{1.0, 2.0})
+	require.Equal(t, 42, n.Key)
+	require.Equal(t, Vector{1.0, 2.0}, n.Value)
 }

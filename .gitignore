@@ -1,1 +1,6 @@
 __debug_bin**
+/CLAUDE.md
+/commit.msg
+.claude/
+.vibe-vault.toml
+example/constitution-search/constitution-search
