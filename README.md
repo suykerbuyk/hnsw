@@ -102,6 +102,33 @@ ok      github.com/coder/hnsw   2.624s
 
 when saving/loading a graph of 100 vectors with 256 dimensions.
 
+## Testing
+
+Run `make help` for available targets. The key ones:
+
+```bash
+make test          # unit tests only (-short flag, fast)
+make integration   # full suite including recall validation
+make bench         # benchmarks
+make check         # vet + unit tests (CI gate)
+```
+
+### Integration Tests
+
+Integration tests validate recall accuracy against brute-force ground truth
+using a corpus of real constitutional documents (US Constitution, Amendments,
+Canadian Constitution Act 1867, and Mexico's 1917 Constitution). Text is
+embedded via TF-IDF weighted feature hashing into 2048-dimensional vectors.
+
+The tests cover:
+- **Recall@k** (k=5, 10, 20) against exhaustive nearest-neighbor search
+- **Delete resilience** — recall after removing 20% of nodes
+- **Export/Import fidelity** — round-trip through `SavedGraph` preserves search quality
+
+The `test-data/` directory contains the constitutional texts used as a stable
+reference corpus. The `example/constitution-search` directory provides a
+runnable CLI that demonstrates indexing and querying against this corpus.
+
 ## Performance
 
 By and large the greatest effect you can have on the performance of the graph
