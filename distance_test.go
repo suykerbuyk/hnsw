@@ -58,6 +58,15 @@ func TestDistanceFuncToName_Unknown(t *testing.T) {
 	require.False(t, ok)
 }
 
+func BenchmarkEuclideanDistance(b *testing.B) {
+	v1 := randFloats(1536)
+	v2 := randFloats(1536)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		EuclideanDistance(v1, v2)
+	}
+}
+
 func BenchmarkCosineSimilarity(b *testing.B) {
 	v1 := randFloats(1536)
 	v2 := randFloats(1536)
