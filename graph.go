@@ -79,14 +79,15 @@ func (s searchCandidate[K]) Less(o searchCandidate[K]) bool {
 // search returns the layer node closest to the target node
 // within the same layer.
 func (n *layerNode[K]) search(
-	// k is the number of candidates in the result set.
+	// k is the number of nearest neighbors to return.
 	k int,
 	efSearch int,
 	target Vector,
 	distance DistanceFunc,
 ) []searchCandidate[K] {
-	// This is a basic greedy algorithm to find the entry point at the given level
-	// that is closest to the target node.
+	// HNSW paper Algorithm 5 (SEARCH-LAYER).
+	// The result set W is bounded by efSearch (not k) to prevent premature
+	// termination. Only the k closest are returned after the search completes.
 	candidates := heap.Heap[searchCandidate[K]]{}
 	candidates.Init(make([]searchCandidate[K], 0, efSearch))
 	candidates.Push(
@@ -99,7 +100,7 @@ func (n *layerNode[K]) search(
 		result  = heap.Heap[searchCandidate[K]]{}
 		visited = make(map[K]bool)
 	)
-	result.Init(make([]searchCandidate[K], 0, k))
+	result.Init(make([]searchCandidate[K], 0, efSearch))
 
 	// Begin with the entry node in the result set.
 	result.Push(candidates.Min())
@@ -109,8 +110,9 @@ func (n *layerNode[K]) search(
 		current := candidates.Pop()
 
 		// Standard HNSW termination: if the closest remaining candidate
-		// is farther than the worst result, no further improvement is possible.
-		if result.Len() >= k && current.dist > result.Max().dist {
+		// is farther than the worst in the ef-bounded result set,
+		// no further improvement is possible.
+		if result.Len() >= efSearch && current.dist > result.Max().dist {
 			break
 		}
 
@@ -126,21 +128,32 @@ func (n *layerNode[K]) search(
 			visited[neighborID] = true
 
 			dist := distance(neighbor.Value, target)
-			if result.Len() < k {
+			if result.Len() < efSearch {
 				result.Push(searchCandidate[K]{node: neighbor, dist: dist})
+				candidates.Push(searchCandidate[K]{node: neighbor, dist: dist})
 			} else if dist < result.Max().dist {
 				result.PopLast()
 				result.Push(searchCandidate[K]{node: neighbor, dist: dist})
-			}
-
-			candidates.Push(searchCandidate[K]{node: neighbor, dist: dist})
-			if candidates.Len() > efSearch {
-				candidates.PopLast()
+				candidates.Push(searchCandidate[K]{node: neighbor, dist: dist})
 			}
 		}
 	}
 
-	return result.Slice()
+	// Return only the k closest from the ef-sized result set.
+	res := result.Slice()
+	slices.SortFunc(res, func(a, b searchCandidate[K]) int {
+		if a.dist < b.dist {
+			return -1
+		}
+		if a.dist > b.dist {
+			return 1
+		}
+		return cmp.Compare(a.node.Key, b.node.Key)
+	})
+	if len(res) > k {
+		res = res[:k]
+	}
+	return res
 }
 
 func (n *layerNode[K]) replenish(m int, dist DistanceFunc) {
