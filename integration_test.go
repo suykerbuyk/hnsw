@@ -384,6 +384,149 @@ func TestIntegration_ConstitutionExportImport(t *testing.T) {
 	require.Equal(t, r1, r2)
 }
 
+// docNameFromKey extracts the document name from a node key like "DocName:42".
+func docNameFromKey(key string) string {
+	idx := strings.LastIndex(key, ":")
+	if idx < 0 {
+		return key
+	}
+	return key[:idx]
+}
+
+func TestIntegration_CrossDocumentSearch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	nodes := loadTestDocuments(t)
+
+	g := &Graph[string]{
+		M:        16,
+		Ml:       0.25,
+		Distance: CosineDistance,
+		EfSearch: 100,
+		Rng:      rand.New(rand.NewSource(42)),
+	}
+	for _, n := range nodes {
+		g.Add(n)
+	}
+
+	// Rebuild IDF table from raw documents (loadTestDocuments doesn't expose it).
+	files, err := filepath.Glob("test-data/*.md")
+	require.NoError(t, err)
+	var allTexts []string
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		require.NoError(t, err)
+		allTexts = append(allTexts, chunkText(string(data), chunkMaxChars)...)
+	}
+	idf := buildIDF(allTexts)
+
+	type phraseQuery struct {
+		name   string // subtest name
+		phrase string // search query
+		srcDoc string // expected source document (filename without .md)
+	}
+
+	queries := []phraseQuery{
+		// US Constitution
+		{"USConst/necessary_and_proper", "necessary and proper", "Full_Text_of_the_U.S._Constitution"},
+		{"USConst/electoral_college", "electoral college electors", "Full_Text_of_the_U.S._Constitution"},
+		{"USConst/impeachment", "sole power of impeachment", "Full_Text_of_the_U.S._Constitution"},
+		// US Constitutional Amendments
+		{"USAmend/bear_arms", "right to bear arms", "Full_Text_of_the_U.S._Constitutional_amendments"},
+		{"USAmend/cruel_unusual", "cruel and unusual punishment", "Full_Text_of_the_U.S._Constitutional_amendments"},
+		{"USAmend/double_jeopardy", "double jeopardy", "Full_Text_of_the_U.S._Constitutional_amendments"},
+		// Canadian Constitution
+		{"Canada/dominion", "dominion under the name of canada", "Canadian_Constitution_Act_1867"},
+		{"Canada/governor_general", "governor general", "Canadian_Constitution_Act_1867"},
+		{"Canada/maritime_provinces", "maritime provinces", "Canadian_Constitution_Act_1867"},
+		// Mexico Constitution
+		{"Mexico/ejido", "ejido", "Mexico_1917_rev_2015_Constitution_-_Constitute"},
+		{"Mexico/amparo", "amparo", "Mexico_1917_rev_2015_Constitution_-_Constitute"},
+		{"Mexico/federal_district", "federal district municipio", "Mexico_1917_rev_2015_Constitution_-_Constitute"},
+	}
+
+	// Short display names for the summary matrix.
+	docShort := map[string]string{
+		"Full_Text_of_the_U.S._Constitution":               "USConst",
+		"Full_Text_of_the_U.S._Constitutional_amendments":   "USAmend",
+		"Canadian_Constitution_Act_1867":                     "Canada",
+		"Mexico_1917_rev_2015_Constitution_-_Constitute":     "Mexico",
+	}
+	docOrder := []string{
+		"Full_Text_of_the_U.S._Constitution",
+		"Full_Text_of_the_U.S._Constitutional_amendments",
+		"Canadian_Constitution_Act_1867",
+		"Mexico_1917_rev_2015_Constitution_-_Constitute",
+	}
+
+	// Collect results for the summary matrix.
+	type queryResult struct {
+		phrase  string
+		srcDoc  string
+		docHits map[string]int
+	}
+	allResults := make([]queryResult, 0, len(queries))
+
+	for _, q := range queries {
+		q := q // capture
+		t.Run(q.name, func(t *testing.T) {
+			queryVec := tfidfEmbedding(q.phrase, embeddingDim, idf)
+			results := g.Search(queryVec, 10)
+
+			docHits := make(map[string]int)
+			for _, r := range results {
+				doc := docNameFromKey(r.Key)
+				docHits[doc]++
+			}
+
+			// Log per-query breakdown.
+			t.Logf("Query: %q (expect: %s)", q.phrase, docShort[q.srcDoc])
+			for _, doc := range docOrder {
+				count := docHits[doc]
+				marker := ""
+				if doc == q.srcDoc {
+					marker = " <-- source"
+				}
+				t.Logf("  %-10s %d%s", docShort[doc], count, marker)
+			}
+
+			require.Greater(t, docHits[q.srcDoc], 0,
+				"expected source doc %q in top-10 results for query %q", q.srcDoc, q.phrase)
+
+			allResults = append(allResults, queryResult{
+				phrase:  q.phrase,
+				srcDoc:  q.srcDoc,
+				docHits: docHits,
+			})
+		})
+	}
+
+	// Log summary cross-document hit matrix.
+	t.Log("")
+	t.Log("Cross-document hit matrix (rows=queries, cols=documents):")
+	header := fmt.Sprintf("  %-40s", "Query")
+	for _, doc := range docOrder {
+		header += fmt.Sprintf("  %8s", docShort[doc])
+	}
+	t.Log(header)
+	t.Log(strings.Repeat("-", len(header)+4))
+
+	for _, r := range allResults {
+		row := fmt.Sprintf("  %-40s", r.phrase)
+		for _, doc := range docOrder {
+			count := r.docHits[doc]
+			cell := fmt.Sprintf("%d", count)
+			if doc == r.srcDoc {
+				cell = fmt.Sprintf("[%d]", count) // bracket the source doc
+			}
+			row += fmt.Sprintf("  %8s", cell)
+		}
+		t.Log(row)
+	}
+}
+
 func BenchmarkIntegration_Constitution(b *testing.B) {
 	files, _ := filepath.Glob("test-data/*.md")
 	if len(files) == 0 {
