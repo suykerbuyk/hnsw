@@ -261,3 +261,22 @@ func TestGraph_RemoveAllNodes(t *testing.T) {
 		g.Add(MakeNode(1, vec))
 	}
 }
+
+func TestGraph_DeleteReplenishUsesGraphDistance(t *testing.T) {
+	// replenish() previously hardcoded CosineDistance. After deleting a
+	// node from a EuclideanDistance graph, replenish must use the correct
+	// distance function or the topology becomes corrupted.
+	g := newTestGraph[int]() // uses EuclideanDistance
+	for i := 0; i < 20; i++ {
+		g.Add(Node[int]{Key: i, Value: Vector{float32(i)}})
+	}
+
+	// Delete a node in the middle to trigger replenish.
+	g.Delete(10)
+
+	// Search should still find the correct nearest neighbor.
+	results := g.Search(Vector{9.5}, 1)
+	require.Len(t, results, 1)
+	// Must be 9 or 11 (both distance 0.5 from 9.5).
+	require.Contains(t, []int{9, 11}, results[0].Key)
+}
