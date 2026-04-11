@@ -113,13 +113,15 @@ func TestGraph_AddSearch(t *testing.T) {
 	)
 
 	require.Len(t, nearest, 4)
+	// The two closest are 64 and 65 (distance 0.5 each).
+	// The next two are 63 and 66 (distance 1.5 each).
 	require.EqualValues(
 		t,
 		[]Node[int]{
 			{64, Vector{64}},
 			{65, Vector{65}},
-			{62, Vector{62}},
 			{63, Vector{63}},
+			{66, Vector{66}},
 		},
 		nearest,
 	)
