@@ -86,6 +86,13 @@ func (n *layerNode[K]) search(
 	target Vector,
 	distance DistanceFunc,
 ) []searchCandidate[K] {
+	// The exploration budget must be at least k, otherwise the ef-bounded
+	// result set cannot hold all requested neighbors and search would
+	// return fewer than k results.
+	if efSearch < k {
+		efSearch = k
+	}
+
 	candidates := heap.Heap[searchCandidate[K]]{}
 	candidates.Init(make([]searchCandidate[K], 0, efSearch))
 	candidates.Push(
@@ -126,14 +133,16 @@ func (n *layerNode[K]) search(
 			visited[neighborID] = true
 
 			dist := distance(neighbor.Value, target)
+			sc := searchCandidate[K]{node: neighbor, dist: dist}
 			if result.Len() < efSearch {
-				result.Push(searchCandidate[K]{node: neighbor, dist: dist})
-				candidates.Push(searchCandidate[K]{node: neighbor, dist: dist})
+				result.Push(sc)
 			} else if dist < result.Max().dist {
 				result.PopLast()
-				result.Push(searchCandidate[K]{node: neighbor, dist: dist})
-				candidates.Push(searchCandidate[K]{node: neighbor, dist: dist})
+				result.Push(sc)
+			} else {
+				continue
 			}
+			candidates.Push(sc)
 		}
 	}
 
