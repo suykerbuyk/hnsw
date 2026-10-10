@@ -309,11 +309,12 @@ func (g *SavedGraph[K]) Save() (err error) {
 	if err != nil {
 		return err
 	}
+	// Close and remove the temp file in all cases. On the error paths this
+	// is the cleanup; on the success path the file has already been closed
+	// and renamed away, so both calls are harmless no-ops.
 	defer func() {
-		if err != nil {
-			_ = tmp.Close()
-			_ = os.Remove(tmp.Name())
-		}
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
 	}()
 
 	wr := bufio.NewWriter(tmp)
